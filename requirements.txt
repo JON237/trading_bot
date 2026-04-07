@@ -1,0 +1,8 @@
+ccxt
+pandas<3.0.0
+numpy
+matplotlib
+python-dotenv
+scikit-learn
+joblib
+streamlit

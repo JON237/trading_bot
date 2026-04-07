@@ -1,0 +1,36 @@
+# Virtual Environments
+venv/
+env/
+.venv/
+venv_311/
+
+# Environment Variables (SEHR WICHTIG!)
+.env
+
+# MacOS specific
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Build & Deployment
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Logs & Data (Ignoriere die echten Daten, behalte die Ordner-Struktur)
+data/*.csv
+logs/*.csv
+charts/*.png
+
+# Machine Learning Modelle (Oft zu groß für Git, besser ignorieren)
+models/*.pkl
