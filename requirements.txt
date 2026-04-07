@@ -6,3 +6,7 @@ python-dotenv
 scikit-learn
 joblib
 streamlit
+ta
+xgboost
+shap
+plotly
