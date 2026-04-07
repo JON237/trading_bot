@@ -363,15 +363,19 @@ if __name__ == "__main__":
         
     try:
         from src.fetcher import DataFetcher
+        from src.indicators import add_indicators_1h
     except ImportError:
         from fetcher import DataFetcher
+        from indicators import add_indicators_1h
 
     fetcher = DataFetcher(exchange_id='binance')
     print("📥 Fetching massive dataset (6 months) for K.I. training...")
     try:
         df_1h = fetcher.fetch_ohlcv("BTC/USDT", timeframe="1h", since_days=180)
         if not df_1h.empty:
-            print(f"✅ Fetched {len(df_1h)} hourly candles. Initializing neural pathways...")
+            print(f"✅ Fetched {len(df_1h)} hourly candles. Calculating indicators...")
+            df_1h = add_indicators_1h(df_1h)
+            print("🧠 Initializing neural pathways...")
             train_and_compare_1h(df_1h)
         else:
             print("⚠️ Not enough data fetched. Training aborted.")
