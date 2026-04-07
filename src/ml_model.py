@@ -355,22 +355,25 @@ def explain_model(model, X_test):
         print("Main reasons: rsi_7 was 28 (oversold), volume_ratio was 2.1 (high volume)")
 
 if __name__ == "__main__":
-    # Test script locally
+    import os
+    import sys
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    test_file = os.path.join(script_dir, "data", "BTC_USDT_1d.csv")
-    
-    if os.path.exists(test_file):
-         df = pd.read_csv(test_file)
-         
-         # Add basic indicators natively or through `add_indicators` 
-         # Ensure dependencies run properly locally if testing
-         if 'SMA_20' not in df.columns:
-             df['SMA_20'] = df['close'].rolling(20).mean()
-         if 'Volume_SMA_20' not in df.columns:
-             df['Volume_SMA_20'] = df['volume'].rolling(20).mean()
-             
-         print("Note: To run full indicator suite, run `add_indicators()` explicitly beforehand if your environment supports pandas-ta.")
-         
-         train_and_evaluate(df)
-    else:
-         print("⚠️ Test file not found. Run fetcher.py first!")
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+        
+    try:
+        from src.fetcher import DataFetcher
+    except ImportError:
+        from fetcher import DataFetcher
+
+    fetcher = DataFetcher(exchange_id='binance')
+    print("📥 Fetching massive dataset (6 months) for K.I. training...")
+    try:
+        df_1h = fetcher.fetch_ohlcv("BTC/USDT", timeframe="1h", since_days=180)
+        if not df_1h.empty:
+            print(f"✅ Fetched {len(df_1h)} hourly candles. Initializing neural pathways...")
+            train_and_compare_1h(df_1h)
+        else:
+            print("⚠️ Not enough data fetched. Training aborted.")
+    except Exception as e:
+        print(f"❌ Error during training pipeline: {e}")
