@@ -192,7 +192,7 @@ def run_paper_trading_15m(max_hours=None):
         from fetcher import DataFetcher
         from indicators import add_indicators_1h
         from strategy import MultiTimeframeStrategy, RuleBasedStrategy, BollingerBounceStrategy
-        from notifier import send_telegram, send_trade_open_alert, send_trade_closed_alert, send_daily_summary, send_risk_alert
+        from notifier import send_telegram, send_trade_open_alert, send_trade_closed_alert, send_daily_summary, send_risk_alert, send_bot_started, send_bot_stopped
         from backtest import calculate_position_size
         from executor import BinanceExecutor
     except ImportError as e:
@@ -216,11 +216,11 @@ def run_paper_trading_15m(max_hours=None):
             print(f"Error loading model from {model_path}: {e}")
             return
     else:
-        print(f"1H Trading Bot started. Strategy: BollingerBounceStrategy (ML Disabled)")
+        print(f"15M Trading Bot started. Strategy: BollingerBounceStrategy (ML Disabled)")
         strategy = BollingerBounceStrategy()
         
     try:
-        send_telegram("Bot started in paper trading mode")
+        send_bot_started(mode="Paper Trading", strategy="BollingerBounce 15m")
     except:
         pass
         
@@ -432,9 +432,17 @@ def run_paper_trading_15m(max_hours=None):
                 
         except KeyboardInterrupt:
             print("\nBot stopped cleanly via KeyboardInterrupt")
+            try:
+                send_bot_stopped(reason="Manuell gestoppt (KeyboardInterrupt)")
+            except:
+                pass
             break
         except Exception as e:
             logging.error(f"Error in main loop: {e}")
+            try:
+                send_bot_stopped(reason=f"Fehler: {str(e)[:200]}")
+            except:
+                pass
 
 if __name__ == "__main__":
     run_paper_trading_15m()
