@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 def connect_exchange():
     """
-    Connect to the Binance Testnet using ccxt.
+    Connect to the Binance Exchange using ccxt.
     Requires BINANCE_API_KEY and BINANCE_API_SECRET in the .env file.
     """
     load_dotenv()
@@ -19,24 +19,43 @@ def connect_exchange():
     api_key = os.getenv('BINANCE_API_KEY')
     api_secret = os.getenv('BINANCE_API_SECRET')
     
+    # Check config to route correctly
     try:
-        # Initialize Binance with testnet/sandbox mode
+        import sys
+        bot_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.dirname(bot_dir)
+        if root_dir not in sys.path:
+            sys.path.insert(0, root_dir)
+        from config import USE_TESTNET
+    except ImportError:
+        USE_TESTNET = True
+    
+    try:
+        # Initialize Binance with futures scope
         exchange = ccxt.binance({
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
+            'options': {
+                'defaultType': 'future'
+            }
         })
+        # Override URLs specifically for Futures Demo Trading instead of using deprecated sandbox mode
+        if USE_TESTNET:
+            exchange.urls['api']['fapiPublic'] = 'https://demo-fapi.binance.com/fapi/v1'
+            exchange.urls['api']['fapiPrivate'] = 'https://demo-fapi.binance.com/fapi/v1'
+            exchange.urls['api']['fapiPrivateV2'] = 'https://demo-fapi.binance.com/fapi/v2'
         
-        # Enable sandbox mode for the testnet (disabled here because testnet lacks sufficient historical candles for ML)
-        exchange.set_sandbox_mode(False)
-        
-        # Test the connection by fetching the account balance
-        balance = exchange.fetch_balance()
+        # Fetch the futures balance
+        balance = exchange.fetch_balance({'type': 'future'})
         
         # Extract available USDT
         usdt_balance = balance.get('USDT', {}).get('free', 0.0)
         
-        print(f"✅ Successfully connected to Binance Testnet!")
+        if USE_TESTNET:
+            print(f"✅ Successfully connected to Binance TESTNET API!")
+        else:
+            print(f"✅ Successfully connected to Binance REAL MONEY API!")
         print(f"💰 Available USDT Balance: {usdt_balance}")
         
         return exchange

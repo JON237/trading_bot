@@ -148,7 +148,7 @@ class MultiTimeframeStrategy:
             
         return True
 
-    def generate_signals(self, df_1h: pd.DataFrame, df_4h: pd.DataFrame, model, confidence_threshold: float = 0.62):
+    def generate_signals(self, df_1h: pd.DataFrame, df_4h: pd.DataFrame, model, confidence_threshold: float = 0.62, position="NONE", entry_price=0.0):
         """
         Generates trading signals by combining 4H trend direction with 1H ML predictions.
         Focuses only on the latest available candle for live decisions.
@@ -259,6 +259,157 @@ class MultiTimeframeStrategy:
         print(f"Signal: {signal_str} | Confidence: {confidence*100:.0f}% | 4H Trend: {trend_str} | Score: {score}/10")
         
         return signal, confidence, trend_str, score
+
+
+class RuleBasedStrategy:
+    """
+    Purely rule-based dual-timeframe strategy.
+    Disables ML completely. Uses EMA_9/EMA_21 crossovers paired with 4H SMA_20/SMA_50 trend.
+    """
+    def __init__(self):
+        pass
+
+    def is_good_trading_hour(self, timestamp_utc) -> bool:
+        if pd.isna(timestamp_utc) or timestamp_utc is None:
+            return True
+        try:
+            hour = pd.to_datetime(timestamp_utc).hour
+        except Exception:
+            return True
+        if 22 <= hour <= 23:
+            return False
+        return True
+
+    def generate_signals(self, df_1h: pd.DataFrame, df_4h: pd.DataFrame, model=None, confidence_threshold=0, position="NONE", entry_price=0.0):
+        latest_1h_row = df_1h.iloc[-1]
+        latest_timestamp = latest_1h_row.get('timestamp', "Unknown Time")
+        
+        # --- Filter 1: Trading Session ---
+        if not self.is_good_trading_hour(latest_timestamp):
+            print(f"Signal filtered: BAD_TRADING_SESSION (22:00-23:59 UTC) at {latest_timestamp}")
+            return 0, 0.0, "NEUTRAL", 0
+            
+        # --- Filter 2: Volatility (ATR) ---
+        if 'ATR_14' in df_1h.columns:
+            lookback = min(168, len(df_1h))
+            avg_atr = df_1h['ATR_14'].iloc[-lookback:].mean()
+            current_atr = latest_1h_row['ATR_14']
+            
+            if pd.notna(avg_atr) and pd.notna(current_atr) and avg_atr > 0:
+                if current_atr < 0.5 * avg_atr:
+                    print(f"Signal filtered: LOW_VOLATILITY (ATR {current_atr:.2f} < 0.5 * avg_atr {avg_atr:.2f}) at {latest_timestamp}")
+                    return 0, 0.0, "NEUTRAL", 0
+                if current_atr > 3.0 * avg_atr:
+                    print(f"Signal filtered: EXTREME_VOLATILITY (ATR {current_atr:.2f} > 3.0 * avg_atr {avg_atr:.2f}) at {latest_timestamp}")
+                    return 0, 0.0, "NEUTRAL", 0
+
+        # Step 1: Get 4H Trend Direction
+        if 'SMA_20' not in df_4h.columns:
+            df_4h['SMA_20'] = df_4h['close'].rolling(20).mean()
+        if 'SMA_50' not in df_4h.columns:
+            df_4h['SMA_50'] = df_4h['close'].rolling(50).mean()
+            
+        latest_4h = df_4h.iloc[-1]
+        trend_bullish = latest_4h['SMA_20'] > latest_4h['SMA_50']
+        trend_bearish = latest_4h['SMA_20'] < latest_4h['SMA_50']
+        
+        trend_str = "BULLISH" if trend_bullish else ("BEARISH" if trend_bearish else "NEUTRAL")
+
+        # Step 2: Extract 1H Indicators
+        if 'EMA_9' not in df_1h.columns:
+            df_1h['EMA_9'] = df_1h['close'].ewm(span=9, adjust=False).mean()
+        if 'EMA_21' not in df_1h.columns:
+            df_1h['EMA_21'] = df_1h['close'].ewm(span=21, adjust=False).mean()
+            
+        # Check crossover state over the last 2 candles
+        prev_1h = df_1h.iloc[-2]
+        curr_1h = df_1h.iloc[-1]
+        
+        # BUY Trigger: Crosses above
+        trigger_bullish = (prev_1h['EMA_9'] <= prev_1h['EMA_21']) and (curr_1h['EMA_9'] > curr_1h['EMA_21'])
+        # SELL Trigger: Crosses below
+        trigger_bearish = (prev_1h['EMA_9'] >= prev_1h['EMA_21']) and (curr_1h['EMA_9'] < curr_1h['EMA_21'])
+
+        # Step 3: Combined signal
+        signal = 0
+        if trigger_bullish and trend_bullish:
+            signal = 1
+            signal_str = "BUY"
+        elif trigger_bearish and trend_bearish:
+            signal = -1
+            signal_str = "SELL"
+        else:
+            signal_str = "HOLD"
+
+        confidence = 1.0 if signal != 0 else 0.0
+        score = 10 if signal != 0 else 0
+
+        print(f"Rule-Based Signal: {signal_str} | 1H EMA: {'Crossed Up' if trigger_bullish else ('Crossed Down' if trigger_bearish else 'No Cross')} | 4H Trend: {trend_str}")
+        return signal, confidence, trend_str, score
+
+class BollingerBounceStrategy:
+    """
+    Purely rule-based BB mean-reversion strategy.
+    Disables ML completely.
+    """
+    def __init__(self):
+        pass
+
+    def generate_signals(self, df_1h: pd.DataFrame, df_4h: pd.DataFrame=None, model=None, confidence_threshold=0, position="NONE", entry_price=0.0):
+        latest = df_1h.iloc[-1]
+        time_str = latest.get('timestamp', "Unknown Time")
+        
+        if 'BBL_20_2.0' not in df_1h.columns:
+            import pandas_ta as ta
+            bb = ta.bbands(df_1h['close'], length=20, std=2.0)
+            if bb is not None:
+                df_1h = pd.concat([df_1h, bb], axis=1)
+                latest = df_1h.iloc[-1]
+                
+        bbl_col = 'BBL_20_2.0'
+        bbm_col = 'BBM_20_2.0'
+        bbu_col = 'BBU_20_2.0'
+        
+        if bbl_col not in df_1h.columns or 'RSI_14' not in df_1h.columns:
+            print("⚠️ Bollinger Bands (20) or RSI_14 missing. Generating neutral signal.")
+            return 0, 0.0, "NEUTRAL", 0
+            
+        close_price = latest['close']
+        bb_lower = latest[bbl_col]
+        bb_middle = latest[bbm_col]
+        bb_upper = latest[bbu_col]
+        rsi = latest['RSI_14']
+        
+        signal = 0
+        reason = "HOLD"
+        
+        if position == "LONG":
+            if close_price >= bb_middle:
+                signal = -1
+                reason = "band_middle"
+            elif close_price >= bb_upper * 0.999:
+                signal = -1
+                reason = "band_upper"
+            elif rsi > 65:
+                signal = -1
+                reason = "rsi_overbought"
+            elif close_price <= entry_price * 0.98:
+                signal = -1
+                reason = "stop_loss"
+                
+        if position == "NONE" and signal == 0:
+            if close_price <= bb_lower * 1.001 and rsi < 35:
+                signal = 1
+                reason = "BUY"
+                
+        if signal == 1:
+            print(f"[{time_str}] BUY — Price at lower band: ${close_price:.2f} | RSI: {rsi:.1f} | BB_lower: ${bb_lower:.2f}")
+        elif signal == -1:
+            pnl_pct = ((close_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0.0
+            print(f"[{time_str}] SELL — Reason: {reason} | PnL: {pnl_pct:.2f}%")
+            
+        return signal, 1.0, reason, 10
+
 
 if __name__ == "__main__":
     import os

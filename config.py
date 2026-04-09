@@ -1,20 +1,19 @@
 """
 config.py
-Configuration and settings for the trading bot.
-Handles loading environment variables (API keys, secrets) via python-dotenv.
+Central configuration file for the trading bot.
 """
 
-import os
-from dotenv import load_dotenv
+# ML disabled — set USE_ML_MODEL = True in config.py to re-enable
+USE_ML_MODEL = False
 
-# Load environment variables from a .env file (if present)
-load_dotenv()
+# LIVE TRADING DANGER ZONE: Set to True to allow real Binance API execution
+LIVE_TRADING_ENABLED = False
 
-# Exchange settings
-EXCHANGE_ID = os.getenv('EXCHANGE_ID', 'binance')
-API_KEY = os.getenv('API_KEY', 'your_api_key_here')
-API_SECRET = os.getenv('API_SECRET', 'your_api_secret_here')
+# TESTNET DANGER ZONE: Switch between real money and Binance Testnet
+USE_TESTNET = True
 
-# Trading parameters
-SYMBOL = 'BTC/USDT'
-TIMEFRAME = '1h'
+# Position size for real trades in USDT (e.g. 50 USDT per trade)
+TRADE_SIZE_USDT = 50.0
+
+# Futures Leverage Multiplier (1x to 125x)
+FUTURES_LEVERAGE = 5

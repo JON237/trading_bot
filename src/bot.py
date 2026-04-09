@@ -170,9 +170,9 @@ def run_paper_trading(interval_minutes: int = 60, stop_loss_pct: float = 0.03, t
         # Halt execution gracefully
         print("\nBot stopped cleanly")
 
-def run_paper_trading_1h(max_hours=None):
+def run_paper_trading_15m(max_hours=None):
     """
-    1H Paper trading loop. Waits for exactly the top of the hour, fetches data,
+    15M Paper trading loop. Waits for exactly the next 15-minute mark, fetches data,
     evaluates MTF strategy, applies ATR stops natively via backtest module,
     and logs actions without crashing.
     """
@@ -182,35 +182,50 @@ def run_paper_trading_1h(max_hours=None):
     from datetime import timedelta
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.dirname(script_dir)
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
+    if root_dir not in sys.path:
+        sys.path.insert(0, root_dir)
         
     try:
         from fetcher import DataFetcher
         from indicators import add_indicators_1h
-        from strategy import MultiTimeframeStrategy
+        from strategy import MultiTimeframeStrategy, RuleBasedStrategy, BollingerBounceStrategy
         from notifier import send_telegram, send_trade_open_alert, send_trade_closed_alert, send_daily_summary, send_risk_alert
         from backtest import calculate_position_size
+        from executor import BinanceExecutor
     except ImportError as e:
         logging.error(f"Missing modules. Ensure running from src directory: {e}")
         return
         
-    model_path = os.path.join(os.path.dirname(script_dir), "models", "best_model_1h.pkl")
-    
+    # Attempt to load config flag
     try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        print(f"Error loading model from {model_path}: {e}")
-        return
+        from config import USE_ML_MODEL
+    except ImportError:
+        USE_ML_MODEL = True
+
+    model = None
+    if USE_ML_MODEL:
+        model_path = os.path.join(os.path.dirname(script_dir), "models", "best_model_1h.pkl")
+        try:
+            model = joblib.load(model_path)
+            print(f"1H Trading Bot started. Model: best_model_1h.pkl. Strategy: MultiTimeframe MTF")
+            strategy = MultiTimeframeStrategy()
+        except Exception as e:
+            print(f"Error loading model from {model_path}: {e}")
+            return
+    else:
+        print(f"1H Trading Bot started. Strategy: BollingerBounceStrategy (ML Disabled)")
+        strategy = BollingerBounceStrategy()
         
-    print(f"1H Trading Bot started. Model: best_model_1h.pkl. Strategy: MultiTimeframe MTF")
     try:
         send_telegram("Bot started in paper trading mode")
     except:
         pass
         
     fetcher = DataFetcher(exchange_id='binance')
-    strategy = MultiTimeframeStrategy()
+    live_executor = BinanceExecutor(fetcher.exchange)
     
     initial_portfolio = 10000.0
     portfolio = initial_portfolio
@@ -246,8 +261,11 @@ def run_paper_trading_1h(max_hours=None):
     while True:
         try:
             now = datetime.now()
-            next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-            sleep_secs = (next_hour - now).total_seconds()
+            
+            # Calculate next 15-minute mark
+            minutes_to_add = 15 - (now.minute % 15)
+            next_run = (now + timedelta(minutes=minutes_to_add)).replace(second=0, microsecond=0)
+            sleep_secs = (next_run - now).total_seconds()
             
             now_utc = datetime.utcnow()
             if now_utc.hour == 20 and now_utc.date() > last_summary_date:
@@ -271,52 +289,68 @@ def run_paper_trading_1h(max_hours=None):
                 daily_best_pct = -100.0
                 daily_worst_pct = 100.0
             
-            # Wait until next full hour
-            time.sleep(sleep_secs + 2) # small buffer to let exchange API post new candle
-            
             now_str = datetime.now().strftime("%H:%M")
             
-            df_1h = fetcher.fetch_ohlcv("BTC/USDT", timeframe="1h", since_days=10)
-            if df_1h.empty:
-                continue
-            df_1h = df_1h.tail(200).reset_index(drop=True)
+            if not getattr(live_executor, 'first_run_done', False):
+                live_executor.first_run_done = True
+                print(f"[{now_str}] Cold Boot: Running immediate evaluation...")
+            else:
+                # Wait until next 15m mark
+                print(f"[{now_str}] Sleeping for {sleep_secs} seconds until next 15-minute candle...")
+                time.sleep(sleep_secs + 2) # small buffer
             
-            df_4h = fetcher.fetch_ohlcv("BTC/USDT", timeframe="4h", since_days=14)
+            df_15m = fetcher.fetch_ohlcv("BTC/USDT", timeframe="15m", since_days=25)
+            if df_15m.empty:
+                continue
+            df_15m = df_15m.tail(2160).reset_index(drop=True)
+            
+            df_4h = fetcher.fetch_ohlcv("BTC/USDT", timeframe="4h", since_days=30)
             if df_4h.empty:
                 continue
-            df_4h = df_4h.tail(50).reset_index(drop=True)
+            df_4h = df_4h.tail(150).reset_index(drop=True)
             
-            df_1h = add_indicators_1h(df_1h)
-            
-            old_stdout = sys.stdout
-            sys.stdout = open(os.devnull, 'w')
             try:
-                signal, conf, trend, score = strategy.generate_signals(df_1h, df_4h, model)
-            finally:
-                sys.stdout.close()
-                sys.stdout = old_stdout
+                df_15m = add_indicators_1h(df_15m)
+            except Exception as e:
+                print(f"Error adding indicators: {e}")
+                continue
                 
-            latest_close = df_1h.iloc[-1]['close']
-            atr_val = df_1h.iloc[-1].get('ATR_14', latest_close * 0.05)
+            current_data = df_15m.iloc[:-1]
+            last_candle_15m = df_15m.iloc[-1]
+            
+            if USE_ML_MODEL:
+                signal, conf, score, reason_or_trend = strategy.generate_signals(current_data, df_4h)
+            else:
+                signal, conf, score, reason_or_trend = strategy.generate_signals(current_data)
+                
+            exec_price = float(last_candle_15m['close'])
+            atr_val = float(current_data['ATR_14'].iloc[-1]) if 'ATR_14' in current_data.columns else exec_price * 0.02
             
             pnl_pct = 0.0
             if position == "LONG":
-                pnl_pct = ((latest_close - entry_price) / entry_price) * 100
+                pnl_pct = ((exec_price - entry_price) / entry_price) * 100
                 
             sold = False
             
             # Check active position
             if position == "LONG":
                 reason = None
-                if latest_close <= stop_price:
-                    reason = "Stop Loss"
-                elif latest_close >= tp_price:
-                    reason = "Take Profit"
-                elif signal == -1:
-                    reason = "Signal Sell"
+                if not USE_ML_MODEL and signal == -1:
+                    reason = reason_or_trend
+                else:
+                    if exec_price <= stop_price:
+                        reason = "Stop Loss"
+                    elif exec_price >= tp_price:
+                        reason = "Take Profit"
+                    elif signal == -1:
+                        reason = "Signal Sell"
                     
                 if reason:
-                    net_return = position_size * latest_close * 0.999 # 0.1% exchange fee
+                    # Execute sell & cancel defensive OCO
+                    live_executor.cancel_all_orders()
+                    live_executor.execute_sell(position_size)
+                    
+                    net_return = position_size * exec_price * 0.999 # 0.1% exchange fee
                     pnl_usd = net_return - (position_size * entry_price)
                     
                     portfolio += net_return
@@ -349,23 +383,37 @@ def run_paper_trading_1h(max_hours=None):
                     
             # Check for new signals
             if position == "NONE" and signal == 1 and not sold:
-                pos_size, new_stop, new_tp = calculate_position_size(portfolio, latest_close, atr_val, risk_pct=0.02)
-                invest = pos_size * latest_close * 1.001 # entry fee
+                buy_res = live_executor.buy_market(latest_close)
                 
-                if portfolio >= invest:
-                    portfolio -= invest
-                    position = "LONG"
-                    position_size = pos_size
-                    entry_price = latest_close
-                    entry_time = datetime.now()
-                    stop_price = new_stop
-                    tp_price = new_tp
-                    log_trade_1h("BUY", latest_close, 0.0, "Signal Buy")
-                    trades_executed += 1
+                if buy_res:
+                    # Fetch executed metrics (fallback to simulation)
+                    pos_size = float(buy_res.get('filled', TRADE_SIZE_USDT / latest_close))
+                    exec_price = float(buy_res.get('price', latest_close))
                     
-                    try:
-                        send_trade_open_alert(latest_close, pos_size, invest, new_stop, new_tp, conf * 100, score, trend)
-                    except: pass
+                    # Calculate defensive logic based on strategy 
+                    if not USE_ML_MODEL:
+                        new_stop = exec_price * 0.98
+                        new_tp = float(df_1h.iloc[-1].get('BBU_20_2.0', exec_price * 1.05))
+                    else:
+                         _, new_stop, new_tp = calculate_position_size(portfolio, exec_price, atr_val, risk_pct=0.02)
+                    
+                    live_executor.place_oco_sell(pos_size, exec_price, new_tp, new_stop)
+                    
+                    invest = pos_size * exec_price * 1.001 # approx fee
+                    if portfolio >= invest:
+                        portfolio -= invest
+                        position = "LONG"
+                        position_size = pos_size
+                        entry_price = exec_price
+                        entry_time = datetime.now()
+                        stop_price = new_stop
+                        tp_price = new_tp
+                        log_trade_1h("BUY", exec_price, 0.0, "Signal Buy")
+                        trades_executed += 1
+                        
+                        try:
+                            send_trade_open_alert(exec_price, pos_size, invest, new_stop, new_tp, conf * 100, score, reason_or_trend)
+                        except: pass
                     
             sig_str = "BUY" if signal == 1 else ("SELL" if signal == -1 else "HOLD")
             pos_str = f"LONG ${entry_price:,.0f}" if position == "LONG" else "NONE"
@@ -389,6 +437,4 @@ def run_paper_trading_1h(max_hours=None):
             logging.error(f"Error in main loop: {e}")
 
 if __name__ == "__main__":
-    # Test script directly mapping an interval cycle length matching standard 60m blocks
-    # run_paper_trading(interval_minutes=60)
-    run_paper_trading_1h()
+    run_paper_trading_15m()
